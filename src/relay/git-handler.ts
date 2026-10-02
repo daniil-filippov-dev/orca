@@ -91,7 +91,7 @@ export class GitHandler {
       watcherRegistry: this.watcherRegistry,
       git: (args, cwd, opts) =>
         opts === undefined ? this.git(args, cwd) : this.git(args, cwd, opts),
-      gitBuffer: (args, cwd) => this.gitBuffer(args, cwd),
+      gitBuffer: (args, cwd, stdin) => this.gitBuffer(args, cwd, stdin),
       spawnClone: (args, cwd, progressId, context) =>
         this.spawnClone(args, cwd, progressId, context),
       clearGitMutationReadCaches: () => this.clearGitMutationReadCaches(),
@@ -189,16 +189,21 @@ export class GitHandler {
       : run()
   }
 
-  private async gitBuffer(args: string[], cwd: string): Promise<Buffer> {
-    const filteredRead = args.includes('--filters')
-    const { stdout } = (await execFileAsync('git', args, {
+  private async gitBuffer(args: string[], cwd: string, stdin?: string): Promise<Buffer> {
+    const filteredRead =
+      args.includes('--filters') || (args.includes('lfs') && args.includes('smudge'))
+    const pending = execFileAsync('git', args, {
       cwd,
       // Why: smudge may fetch; guard credential UI without overriding the host's configured SSH command.
       env: filteredRead ? gitCredentialPromptGuardEnv(buildRelayGitEnv()) : buildRelayGitEnv(),
       encoding: 'buffer',
       maxBuffer: MAX_GIT_BUFFER,
-      ...(filteredRead ? { timeout: GIT_BLOB_READ_TIMEOUT_MS } : {})
-    })) as { stdout: Buffer }
+      timeout: GIT_BLOB_READ_TIMEOUT_MS
+    })
+    if (stdin !== undefined) {
+      endSubprocessStdin(pending.child.stdin, stdin)
+    }
+    const { stdout } = await pending
     return stdout
   }
 

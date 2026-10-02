@@ -6,6 +6,7 @@
  * remain decoupled from the GitHandler class.
  */
 import * as path from 'node:path'
+import { resolveGitLfsPreview } from '../shared/git-lfs-preview'
 import { probeGitBlobPresence } from '../shared/git-blob-presence'
 import { bufferToBlob, parseBranchDiff, PREVIEWABLE_MIME } from './git-handler-utils'
 import { buildDiffResult } from './git-diff-result'
@@ -26,7 +27,7 @@ export type GitExec = (
   }
 ) => Promise<{ stdout: string; stderr: string }>
 
-export type GitBufferExec = (args: string[], cwd: string) => Promise<Buffer>
+export type GitBufferExec = (args: string[], cwd: string, stdin?: string) => Promise<Buffer>
 
 // ─── Blob reading ────────────────────────────────────────────────────
 
@@ -44,7 +45,10 @@ export async function readBlobAtOid(
     : ['show', '--end-of-options']
   try {
     const buf = await gitBuffer([...command, `${oid}:${gitPath}`], cwd)
-    return bufferToBlob(buf, filePath)
+    const content = PREVIEWABLE_MIME[path.extname(filePath).toLowerCase()]
+      ? await resolveGitLfsPreview(buf, gitPath, (args, stdin) => gitBuffer(args, cwd, stdin))
+      : buf
+    return bufferToBlob(content, filePath)
   } catch (error) {
     if (isGitBufferOverflowError(error)) {
       return { content: '', isBinary: true }
@@ -70,7 +74,10 @@ export async function readBlobAtIndex(
     : ['show', '--end-of-options']
   try {
     const buf = await gitBuffer([...command, `:${gitPath}`], cwd)
-    return { ...bufferToBlob(buf, filePath), missing: false }
+    const content = PREVIEWABLE_MIME[path.extname(filePath).toLowerCase()]
+      ? await resolveGitLfsPreview(buf, gitPath, (args, stdin) => gitBuffer(args, cwd, stdin))
+      : buf
+    return { ...bufferToBlob(content, filePath), missing: false }
   } catch (error) {
     if (isGitBufferOverflowError(error)) {
       return { content: '', isBinary: true, missing: false }

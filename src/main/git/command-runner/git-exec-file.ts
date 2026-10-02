@@ -25,7 +25,11 @@ import { prepareWindowsHostGitEnvironment } from './windows-host-git-environment
 import { buildNetworkSshPolicyEnv } from './git-ssh-policy-env'
 import { nonInteractiveGitEnv, untranslatedGitOutputEnv } from './git-process-env'
 import { acquireGitAdmission } from './git-subprocess-admission'
-import { GitCommandTimeoutError, gitCommandTimeoutMs } from './git-command-timeout'
+import {
+  GIT_READ_TIMEOUT_MS,
+  GitCommandTimeoutError,
+  gitCommandTimeoutMs
+} from './git-command-timeout'
 
 /**
  * Async git command execution. Drop-in replacement for
@@ -190,6 +194,7 @@ export async function gitExecFileAsyncBuffer(
     maxBuffer?: number
     timeout?: number
     timeoutMsForTest?: number
+    stdin?: string
     env?: NodeJS.ProcessEnv
     wslDistro?: string
     preferWslDirectGit?: boolean
@@ -197,7 +202,8 @@ export async function gitExecFileAsyncBuffer(
   }
 ): Promise<{ stdout: Buffer }> {
   return withGitSpan({ args, cwd: options.cwd }, async (span) => {
-    const filteredRead = args.includes('--filters')
+    const filteredRead =
+      args.includes('--filters') || (args.includes('lfs') && args.includes('smudge'))
     // Why: smudge may fetch LFS objects and needs the WSL profile's SSH agent and proxy environment.
     const effectiveOptions = filteredRead
       ? {
@@ -209,18 +215,12 @@ export async function gitExecFileAsyncBuffer(
     if (isWslLinkedWorktreeGitRoutingCandidate(options.cwd, options.wslDistro)) {
       await prepareWslLinkedWorktreeGitRouting(options.cwd, options.wslDistro)
     }
-    const readEnvironmentReady = pendingWslDirectGitReadEnvironment(args, effectiveOptions)
-    if (readEnvironmentReady) {
-      await readEnvironmentReady
-    }
+    await pendingWslDirectGitReadEnvironment(args, effectiveOptions)
     // `git show` is a read, so this normally runs with no shell at all. The fence
     // still matters for the login-shell fallback: these are raw blob bytes going
     // straight to the diff/blob viewer, where a banner becomes file content.
     let resolved = resolveGitCommand(args, effectiveOptions, false, true)
-    const environmentReady = prepareWindowsHostGitEnvironment(resolved, undefined)
-    if (environmentReady) {
-      await environmentReady
-    }
+    await prepareWindowsHostGitEnvironment(resolved, undefined)
     resolved = resolveGitCommand(args, effectiveOptions, false, true)
     const env = filteredRead
       ? (await buildNetworkSshPolicyEnv(effectiveOptions)).env
@@ -232,7 +232,9 @@ export async function gitExecFileAsyncBuffer(
       tier: options.admissionTier
     })
     span?.setAttribute('git.queue_wait_ms', grant.queueWaitMs)
-    const timeoutMs = gitCommandTimeoutMs(args, options.timeout, options.timeoutMsForTest)
+    const timeoutMs =
+      gitCommandTimeoutMs(args, options.timeout, options.timeoutMsForTest) ??
+      (filteredRead ? (options.timeoutMsForTest ?? GIT_READ_TIMEOUT_MS) : undefined)
     let termination: Promise<void> | null = null
     try {
       let reportTerminated: () => void = () => {}
@@ -244,6 +246,7 @@ export async function gitExecFileAsyncBuffer(
         encoding: 'buffer',
         maxBuffer: options.maxBuffer,
         timeout: timeoutMs,
+        stdin: options.stdin,
         env,
         admissionTier: options.admissionTier,
         onChildTerminated: reportTerminated,
@@ -262,13 +265,7 @@ export async function gitExecFileAsyncBuffer(
   })
 }
 
-/**
- * Slice a fenced payload out of raw bytes.
- *
- * Why bytes: blob content may be binary, so decoding to a string to find the
- * fence would corrupt it. Returns the buffer untouched when the command was not
- * fenced or the fence is absent.
- */
+// Why bytes: decoding WSL output fences as text would corrupt binary previews.
 function readCapturedGitBuffer(stdout: Buffer, resolved: ResolvedCommand): Buffer {
   const captured = resolved.captured
   if (!captured) {

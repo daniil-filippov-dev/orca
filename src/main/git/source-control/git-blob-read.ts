@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import * as path from 'node:path'
 import { isBinaryBuffer } from '../../../shared/binary-buffer'
+import { resolveGitLfsPreview } from '../../../shared/git-lfs-preview'
 import { probeGitBlobPresence } from '../../../shared/git-blob-presence'
 import type { GitRuntimeOptions } from '../git-runtime-options'
 import { gitReadOptionsForWorktree } from '../git-runtime-options'
@@ -82,7 +83,21 @@ export async function readGitBlobAtIndexPath(
       maxBuffer: MAX_GIT_SHOW_BYTES
     })
 
-    return { ...bufferToBlob(stdout, filePath), exists: true }
+    const content = PREVIEWABLE_BINARY_MIME_TYPES[path.extname(filePath).toLowerCase()]
+      ? await resolveGitLfsPreview(
+          stdout,
+          gitPath,
+          async (args, stdin) =>
+            (
+              await gitExecFileAsyncBuffer(args, {
+                ...gitReadOptionsForWorktree(worktreePath, options),
+                maxBuffer: MAX_GIT_SHOW_BYTES,
+                stdin
+              })
+            ).stdout
+        )
+      : stdout
+    return { ...bufferToBlob(content, filePath), exists: true }
   } catch (error) {
     if (isMaxBufferOverflowError(error)) {
       return { content: '', isBinary: true, exists: true }
@@ -112,7 +127,21 @@ export async function readGitBlobAtOidPath(
       maxBuffer: MAX_GIT_SHOW_BYTES
     })
 
-    return { ...bufferToBlob(stdout, filePath), exists: true }
+    const content = PREVIEWABLE_BINARY_MIME_TYPES[path.extname(filePath).toLowerCase()]
+      ? await resolveGitLfsPreview(
+          stdout,
+          gitPath,
+          async (args, stdin) =>
+            (
+              await gitExecFileAsyncBuffer(args, {
+                ...gitReadOptionsForWorktree(worktreePath, options),
+                maxBuffer: MAX_GIT_SHOW_BYTES,
+                stdin
+              })
+            ).stdout
+        )
+      : stdout
+    return { ...bufferToBlob(content, filePath), exists: true }
   } catch (error) {
     if (isMaxBufferOverflowError(error)) {
       return { content: '', isBinary: true, exists: true }
