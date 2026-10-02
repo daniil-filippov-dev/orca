@@ -213,6 +213,10 @@ export async function gitExecFileAsyncBuffer(
       await environmentReady
     }
     resolved = resolveGitCommand(args, options, false, true)
+    // Why: LFS smudge can use SSH; preserve repository keys and proxies while guarding prompts.
+    const env = args.includes('--filters')
+      ? (await buildNetworkSshPolicyEnv(options)).env
+      : nonInteractiveGitEnv(options.env)
     const grant = await acquireGitAdmission({
       args,
       cwd: options.cwd,
@@ -227,19 +231,21 @@ export async function gitExecFileAsyncBuffer(
       termination = new Promise<void>((resolve) => {
         reportTerminated = resolve
       })
-      const { stdout } = (await execFileCapture(resolved.binary, resolved.args, {
+      const { stdout } = await execFileCapture(resolved.binary, resolved.args, {
         cwd: resolved.cwd,
         encoding: 'buffer',
         maxBuffer: options.maxBuffer,
         timeout: timeoutMs,
-        // Why: filtered blobs can fetch LFS objects and must not open credential UI.
-        env: nonInteractiveGitEnv(options.env),
+        env,
         admissionTier: options.admissionTier,
         onChildTerminated: reportTerminated,
         ...(timeoutMs === undefined
           ? {}
           : { createTimeoutError: () => new GitCommandTimeoutError(timeoutMs) })
-      })) as { stdout: Buffer }
+      })
+      if (!Buffer.isBuffer(stdout)) {
+        throw new Error('Expected binary Git output.')
+      }
       return { stdout: readCapturedGitBuffer(stdout, resolved) }
     } finally {
       if (termination) {

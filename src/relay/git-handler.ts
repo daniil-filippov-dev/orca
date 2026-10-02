@@ -25,9 +25,11 @@ import { registerGitHandlers } from './git-handler-registration'
 import { resolveGitFetchHeadCommand, runWithGitFetchHeadLock } from '../shared/git-fetch-head-lock'
 import { endSubprocessStdin } from '../shared/subprocess-stdin-write'
 import { MAX_GIT_BUFFER, runGitToTermination } from './git-handler-command-termination'
+import { buildOpenSshBatchModeCommand } from '../shared/git-ssh-batch-mode'
 
 const execFileAsync = promisify(execFile)
 const GIT_BLOB_READ_TIMEOUT_MS = 120_000
+const CORE_SSH_COMMAND_PROBE_TIMEOUT_MS = 2500
 
 function execFileWithStdin(
   command: string,
@@ -189,14 +191,32 @@ export class GitHandler {
   }
 
   private async gitBuffer(args: string[], cwd: string): Promise<Buffer> {
-    const { stdout } = (await execFileAsync('git', args, {
+    const env = buildRelayUnattendedGitEnv()
+    if (args.includes('--filters') && !process.env.GIT_SSH_COMMAND) {
+      const configuredCommand = await this.git(['config', '--get', 'core.sshCommand'], cwd, {
+        timeout: CORE_SSH_COMMAND_PROBE_TIMEOUT_MS
+      }).then(
+        ({ stdout }) => stdout.trim(),
+        (error: unknown) =>
+          error instanceof Error && 'code' in error && error.code === 1 ? '' : null
+      )
+      // Why: custom SSH wrappers and failed probes must not discard repository transport policy.
+      const batchModeCommand = configuredCommand
+        ? buildOpenSshBatchModeCommand(configuredCommand)
+        : null
+      if (batchModeCommand) {
+        env.GIT_SSH_COMMAND = batchModeCommand
+      } else if (configuredCommand !== '') {
+        delete env.GIT_SSH_COMMAND
+      }
+    }
+    const { stdout } = await execFileAsync('git', args, {
       cwd,
-      // Why: LFS smudge can fetch objects; unattended previews must fail instead of prompting.
-      env: buildRelayUnattendedGitEnv(),
+      env,
       encoding: 'buffer',
       maxBuffer: MAX_GIT_BUFFER,
       timeout: GIT_BLOB_READ_TIMEOUT_MS
-    })) as { stdout: Buffer }
+    })
     return stdout
   }
 
