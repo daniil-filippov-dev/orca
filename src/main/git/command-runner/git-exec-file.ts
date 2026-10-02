@@ -232,7 +232,8 @@ export async function gitExecFileAsyncBuffer(
         encoding: 'buffer',
         maxBuffer: options.maxBuffer,
         timeout: timeoutMs,
-        env: untranslatedGitOutputEnv(options.env),
+        // Why: filtered blobs can fetch LFS objects and must not open credential UI.
+        env: nonInteractiveGitEnv(options.env),
         admissionTier: options.admissionTier,
         onChildTerminated: reportTerminated,
         ...(timeoutMs === undefined

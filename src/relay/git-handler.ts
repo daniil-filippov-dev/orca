@@ -27,6 +27,7 @@ import { endSubprocessStdin } from '../shared/subprocess-stdin-write'
 import { MAX_GIT_BUFFER, runGitToTermination } from './git-handler-command-termination'
 
 const execFileAsync = promisify(execFile)
+const GIT_BLOB_READ_TIMEOUT_MS = 120_000
 
 function execFileWithStdin(
   command: string,
@@ -190,9 +191,11 @@ export class GitHandler {
   private async gitBuffer(args: string[], cwd: string): Promise<Buffer> {
     const { stdout } = (await execFileAsync('git', args, {
       cwd,
-      env: buildRelayGitEnv(),
+      // Why: LFS smudge can fetch objects; unattended previews must fail instead of prompting.
+      env: buildRelayUnattendedGitEnv(),
       encoding: 'buffer',
-      maxBuffer: MAX_GIT_BUFFER
+      maxBuffer: MAX_GIT_BUFFER,
+      timeout: GIT_BLOB_READ_TIMEOUT_MS
     })) as { stdout: Buffer }
     return stdout
   }
