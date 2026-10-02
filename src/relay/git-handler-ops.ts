@@ -6,7 +6,7 @@
  * remain decoupled from the GitHandler class.
  */
 import * as path from 'node:path'
-import { bufferToBlob, parseBranchDiff } from './git-handler-utils'
+import { bufferToBlob, parseBranchDiff, PREVIEWABLE_MIME } from './git-handler-utils'
 import { buildDiffResult } from './git-diff-result'
 import { isGitBufferOverflowError } from './git-buffer-overflow'
 import { readWorkingDiffFile } from './git-working-file-read'
@@ -37,8 +37,12 @@ export async function readBlobAtOid(
 ): Promise<{ content: string; isBinary: boolean }> {
   // Why: Git's `<oid>:<path>` syntax expects forward slashes even on Windows.
   const gitPath = filePath.replace(/\\/g, '/')
+  // Why: preview bytes must resolve LFS pointers using the host's smudge filter.
+  const command = PREVIEWABLE_MIME[path.extname(filePath).toLowerCase()]
+    ? ['cat-file', '--filters', '--']
+    : ['show', '--end-of-options']
   try {
-    const buf = await gitBuffer(['show', '--end-of-options', `${oid}:${gitPath}`], cwd)
+    const buf = await gitBuffer([...command, `${oid}:${gitPath}`], cwd)
     return bufferToBlob(buf, filePath)
   } catch (error) {
     if (isGitBufferOverflowError(error)) {
@@ -55,8 +59,12 @@ export async function readBlobAtIndex(
 ): Promise<{ content: string; isBinary: boolean; missing: boolean }> {
   // Why: Git's `:<path>` syntax expects forward slashes even on Windows.
   const gitPath = filePath.replace(/\\/g, '/')
+  // Why: preview bytes must resolve LFS pointers using the host's smudge filter.
+  const command = PREVIEWABLE_MIME[path.extname(filePath).toLowerCase()]
+    ? ['cat-file', '--filters', '--']
+    : ['show', '--end-of-options']
   try {
-    const buf = await gitBuffer(['show', '--end-of-options', `:${gitPath}`], cwd)
+    const buf = await gitBuffer([...command, `:${gitPath}`], cwd)
     return { ...bufferToBlob(buf, filePath), missing: false }
   } catch (error) {
     if (isGitBufferOverflowError(error)) {

@@ -51,8 +51,12 @@ export async function readGitBlobAtIndexPath(
 ): Promise<GitBlobReadResult> {
   // Why: Git's `:<path>` syntax expects forward slashes even on Windows.
   const gitPath = filePath.replace(/\\/g, '/')
+  // Why: preview bytes must resolve LFS pointers using the host's smudge filter.
+  const command = PREVIEWABLE_BINARY_MIME_TYPES[path.extname(filePath).toLowerCase()]
+    ? ['cat-file', '--filters', '--']
+    : ['show']
   try {
-    const { stdout } = await gitExecFileAsyncBuffer(['show', `:${gitPath}`], {
+    const { stdout } = await gitExecFileAsyncBuffer([...command, `:${gitPath}`], {
       ...gitReadOptionsForWorktree(worktreePath, options),
       maxBuffer: MAX_GIT_SHOW_BYTES
     })
@@ -74,9 +78,13 @@ export async function readGitBlobAtOidPath(
 ): Promise<GitBlobReadResult> {
   // Why: Git's `<oid>:<path>` syntax expects forward slashes even on Windows.
   const gitPath = filePath.replace(/\\/g, '/')
+  // Why: preview bytes must resolve LFS pointers using the host's smudge filter.
+  const command = PREVIEWABLE_BINARY_MIME_TYPES[path.extname(filePath).toLowerCase()]
+    ? ['cat-file', '--filters', '--']
+    : ['show', '--end-of-options']
   try {
     const { stdout } = await gitExecFileAsyncBuffer(
-      ['show', '--end-of-options', `${oid}:${gitPath}`],
+      [...command, `${oid}:${gitPath}`],
       {
         ...gitReadOptionsForWorktree(worktreePath, options),
         maxBuffer: MAX_GIT_SHOW_BYTES
