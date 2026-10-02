@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import * as path from 'node:path'
 import { isBinaryBuffer } from '../../../shared/binary-buffer'
+import { probeGitBlobPresence } from '../../../shared/git-blob-presence'
 import type { GitRuntimeOptions } from '../git-runtime-options'
 import { gitReadOptionsForWorktree } from '../git-runtime-options'
 import { gitExecFileAsyncBuffer } from '../runner'
@@ -27,6 +28,26 @@ export type GitBlobReadResult = {
  */
 function isProvenAbsentError(error: unknown): boolean {
   return (error as { code?: unknown } | null)?.code === 128
+}
+
+async function readFilteredBlobFailure(
+  worktreePath: string,
+  gitPath: string,
+  options: GitRuntimeOptions,
+  oid?: string
+): Promise<GitBlobReadResult> {
+  const present = await probeGitBlobPresence(
+    async (args) =>
+      (await gitExecFileAsyncBuffer(args, gitReadOptionsForWorktree(worktreePath, options))).stdout,
+    gitPath,
+    oid
+  )
+  return {
+    content: '',
+    isBinary: present !== false,
+    exists: present !== false,
+    failed: present !== false
+  }
 }
 
 export async function readUnstagedLeftBlob(
@@ -66,6 +87,9 @@ export async function readGitBlobAtIndexPath(
     if (isMaxBufferOverflowError(error)) {
       return { content: '', isBinary: true, exists: true }
     }
+    if (PREVIEWABLE_BINARY_MIME_TYPES[path.extname(filePath).toLowerCase()]) {
+      return readFilteredBlobFailure(worktreePath, gitPath, options)
+    }
     return { content: '', isBinary: false, exists: false, failed: !isProvenAbsentError(error) }
   }
 }
@@ -83,18 +107,18 @@ export async function readGitBlobAtOidPath(
     ? ['cat-file', '--filters', '--']
     : ['show', '--end-of-options']
   try {
-    const { stdout } = await gitExecFileAsyncBuffer(
-      [...command, `${oid}:${gitPath}`],
-      {
-        ...gitReadOptionsForWorktree(worktreePath, options),
-        maxBuffer: MAX_GIT_SHOW_BYTES
-      }
-    )
+    const { stdout } = await gitExecFileAsyncBuffer([...command, `${oid}:${gitPath}`], {
+      ...gitReadOptionsForWorktree(worktreePath, options),
+      maxBuffer: MAX_GIT_SHOW_BYTES
+    })
 
     return { ...bufferToBlob(stdout, filePath), exists: true }
   } catch (error) {
     if (isMaxBufferOverflowError(error)) {
       return { content: '', isBinary: true, exists: true }
+    }
+    if (PREVIEWABLE_BINARY_MIME_TYPES[path.extname(filePath).toLowerCase()]) {
+      return readFilteredBlobFailure(worktreePath, gitPath, options, oid)
     }
     return { content: '', isBinary: false, exists: false, failed: !isProvenAbsentError(error) }
   }

@@ -6,6 +6,7 @@
  * remain decoupled from the GitHandler class.
  */
 import * as path from 'node:path'
+import { probeGitBlobPresence } from '../shared/git-blob-presence'
 import { bufferToBlob, parseBranchDiff, PREVIEWABLE_MIME } from './git-handler-utils'
 import { buildDiffResult } from './git-diff-result'
 import { isGitBufferOverflowError } from './git-buffer-overflow'
@@ -48,6 +49,10 @@ export async function readBlobAtOid(
     if (isGitBufferOverflowError(error)) {
       return { content: '', isBinary: true }
     }
+    if (PREVIEWABLE_MIME[path.extname(filePath).toLowerCase()]) {
+      const present = await probeGitBlobPresence((args) => gitBuffer(args, cwd), gitPath, oid)
+      return { content: '', isBinary: present !== false }
+    }
     return { content: '', isBinary: false }
   }
 }
@@ -69,6 +74,10 @@ export async function readBlobAtIndex(
   } catch (error) {
     if (isGitBufferOverflowError(error)) {
       return { content: '', isBinary: true, missing: false }
+    }
+    if (PREVIEWABLE_MIME[path.extname(filePath).toLowerCase()]) {
+      const present = await probeGitBlobPresence((args) => gitBuffer(args, cwd), gitPath)
+      return { content: '', isBinary: present !== false, missing: present === false }
     }
     // Why: a non-overflow failure means the path is absent from the index (a
     // staged deletion), distinct from the size-capped case handled above.
