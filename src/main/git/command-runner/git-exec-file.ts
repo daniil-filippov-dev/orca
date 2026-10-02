@@ -197,26 +197,34 @@ export async function gitExecFileAsyncBuffer(
   }
 ): Promise<{ stdout: Buffer }> {
   return withGitSpan({ args, cwd: options.cwd }, async (span) => {
+    const filteredRead = args.includes('--filters')
+    // Why: smudge may fetch LFS objects and needs the WSL profile's SSH agent and proxy environment.
+    const effectiveOptions = filteredRead
+      ? {
+          ...options,
+          wslDistro: options.wslDistro ?? resolveGitCommand(args, options).wsl?.distro,
+          useConfiguredSshCommandForNetwork: true
+        }
+      : options
     if (isWslLinkedWorktreeGitRoutingCandidate(options.cwd, options.wslDistro)) {
       await prepareWslLinkedWorktreeGitRouting(options.cwd, options.wslDistro)
     }
-    const readEnvironmentReady = pendingWslDirectGitReadEnvironment(args, options)
+    const readEnvironmentReady = pendingWslDirectGitReadEnvironment(args, effectiveOptions)
     if (readEnvironmentReady) {
       await readEnvironmentReady
     }
     // `git show` is a read, so this normally runs with no shell at all. The fence
     // still matters for the login-shell fallback: these are raw blob bytes going
     // straight to the diff/blob viewer, where a banner becomes file content.
-    let resolved = resolveGitCommand(args, options, false, true)
+    let resolved = resolveGitCommand(args, effectiveOptions, false, true)
     const environmentReady = prepareWindowsHostGitEnvironment(resolved, undefined)
     if (environmentReady) {
       await environmentReady
     }
-    resolved = resolveGitCommand(args, options, false, true)
-    // Why: LFS smudge can use SSH; preserve repository keys and proxies while guarding prompts.
-    const env = args.includes('--filters')
-      ? (await buildNetworkSshPolicyEnv(options)).env
-      : nonInteractiveGitEnv(options.env)
+    resolved = resolveGitCommand(args, effectiveOptions, false, true)
+    const env = filteredRead
+      ? (await buildNetworkSshPolicyEnv(effectiveOptions)).env
+      : untranslatedGitOutputEnv(options.env)
     const grant = await acquireGitAdmission({
       args,
       cwd: options.cwd,
@@ -231,7 +239,7 @@ export async function gitExecFileAsyncBuffer(
       termination = new Promise<void>((resolve) => {
         reportTerminated = resolve
       })
-      const { stdout } = await execFileCapture(resolved.binary, resolved.args, {
+      const { stdout } = (await execFileCapture(resolved.binary, resolved.args, {
         cwd: resolved.cwd,
         encoding: 'buffer',
         maxBuffer: options.maxBuffer,
@@ -242,10 +250,7 @@ export async function gitExecFileAsyncBuffer(
         ...(timeoutMs === undefined
           ? {}
           : { createTimeoutError: () => new GitCommandTimeoutError(timeoutMs) })
-      })
-      if (!Buffer.isBuffer(stdout)) {
-        throw new Error('Expected binary Git output.')
-      }
+      })) as { stdout: Buffer }
       return { stdout: readCapturedGitBuffer(stdout, resolved) }
     } finally {
       if (termination) {
