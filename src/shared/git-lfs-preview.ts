@@ -20,12 +20,12 @@ export async function resolveGitLfsPreview(
   if (!isLfsPointer(buffer)) {
     return buffer
   }
-  // Why: historical LFS pointers must resolve even when current attributes no longer enable LFS.
+  // historical LFS pointers must resolve even when current attributes no longer enable LFS
   const content = await gitBuffer(
     ['-c', 'lfs.fetchinclude=', '-c', 'lfs.fetchexclude=', 'lfs', 'smudge', '--', filePath],
     buffer.toString('utf8')
   )
-  // Why: skip-smudge and download-error settings can report success while returning the pointer.
+  // skip-smudge and download-error settings can report success while returning the pointer
   if (isLfsPointer(content)) {
     throw new Error('Git LFS preview could not be resolved')
   }

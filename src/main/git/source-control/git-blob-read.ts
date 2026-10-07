@@ -14,6 +14,7 @@ export type GitBlobReadResult = {
   content: string
   isBinary: boolean
   exists: boolean
+  unmerged?: boolean
   /**
    * The read did not complete: the blob is neither known-present nor proven
    * absent. Callers must not persist a diff built on one, because the empty side
@@ -47,7 +48,8 @@ async function readFilteredBlobFailure(
     content: '',
     isBinary: present !== false,
     exists: present !== false,
-    failed: present !== false
+    failed: present !== false,
+    ...(present === 'unmerged' ? { unmerged: true } : {})
   }
 }
 
@@ -57,7 +59,7 @@ export async function readUnstagedLeftBlob(
   options: GitRuntimeOptions = {}
 ): Promise<GitBlobReadResult> {
   const indexBlob = await readGitBlobAtIndexPath(worktreePath, filePath, options)
-  if (indexBlob.exists) {
+  if (indexBlob.exists && !indexBlob.unmerged) {
     return indexBlob
   }
 
@@ -73,7 +75,7 @@ export async function readGitBlobAtIndexPath(
 ): Promise<GitBlobReadResult> {
   // Why: Git's `:<path>` syntax expects forward slashes even on Windows.
   const gitPath = filePath.replace(/\\/g, '/')
-  // Why: preview bytes must resolve LFS pointers using the host's smudge filter.
+  // preview bytes must resolve LFS pointers using the host's smudge filter
   const command = PREVIEWABLE_BINARY_MIME_TYPES[path.extname(filePath).toLowerCase()]
     ? ['cat-file', '--filters', '--']
     : ['show']
@@ -117,7 +119,7 @@ export async function readGitBlobAtOidPath(
 ): Promise<GitBlobReadResult> {
   // Why: Git's `<oid>:<path>` syntax expects forward slashes even on Windows.
   const gitPath = filePath.replace(/\\/g, '/')
-  // Why: preview bytes must resolve LFS pointers using the host's smudge filter.
+  // preview bytes must resolve LFS pointers using the host's smudge filter
   const command = PREVIEWABLE_BINARY_MIME_TYPES[path.extname(filePath).toLowerCase()]
     ? ['cat-file', '--filters', '--']
     : ['show', '--end-of-options']

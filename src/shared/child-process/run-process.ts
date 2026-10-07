@@ -75,7 +75,14 @@ export function spawnProcess(spec: ProcessSpec): ChildProcessWithoutNullStreams 
 export function runProcess(spec: ProcessSpec): Promise<ProcessResult> {
   if (spec.signal?.aborted) {
     spec.onChildTerminated?.()
-    return Promise.resolve({ code: null, signal: null, stdout: '', stderr: '', timedOut: false })
+    return Promise.resolve({
+      code: null,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      timedOut: false,
+      ...(spec.captureStdoutBuffer ? { stdoutBuffer: Buffer.alloc(0) } : {})
+    })
   }
   const maxOutputBytes = spec.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES
 
@@ -102,6 +109,7 @@ export function runProcess(spec: ProcessSpec): Promise<ProcessResult> {
     let deferredClose: { code: number | null; signal: NodeJS.Signals | null } | null = null
     let deferredError: Error | null = null
     let rootExitedBeforeBarrier = false
+    let outputLimitStopping = false
 
     const settle = (act: () => void): void => {
       if (settled) {
@@ -115,12 +123,26 @@ export function runProcess(spec: ProcessSpec): Promise<ProcessResult> {
       act()
     }
 
-    child.stdout?.on('data', (chunk: Buffer | string) => stdout.write(chunk))
+    const stopOnOutputLimit = (): void => {
+      if (
+        spec.stopOnOutputLimit &&
+        !outputLimitStopping &&
+        (stdout.truncated() || stderr.truncated())
+      ) {
+        outputLimitStopping = true
+        stopAndSettle()
+      }
+    }
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      stdout.write(chunk)
+      stopOnOutputLimit()
+    })
     child.stderr?.on('data', (chunk: Buffer | string) => {
       stderr.write(chunk)
       if (typeof spec.terminationBarrier === 'object') {
         spec.terminationBarrier.observeStderr?.(chunk)
       }
+      stopOnOutputLimit()
     })
     // Why listeners that do nothing: an unhandled `error` on a stream is an
     // uncaught exception, and that takes the whole main process down. A child
@@ -150,7 +172,8 @@ export function runProcess(spec: ProcessSpec): Promise<ProcessResult> {
         resolve({
           code,
           signal,
-          stdout: stdout.text(),
+          stdout: spec.captureStdoutBuffer ? '' : stdout.text(),
+          ...(spec.captureStdoutBuffer ? { stdoutBuffer: stdout.buffer() } : {}),
           stderr: stderr.text(),
           timedOut,
           outputTruncated: stdout.truncated() || stderr.truncated()
@@ -192,8 +215,10 @@ export function runProcess(spec: ProcessSpec): Promise<ProcessResult> {
     const stopAndSettle = (): void => {
       if (spec.terminationBarrier) {
         barrierStopping = true
-        initialBarrierTermination ??= signalBarrierTree()
-        if (process.platform === 'win32') {
+        initialBarrierTermination ??= spec.forceTerminationOnStop
+          ? forceBarrierTree()
+          : signalBarrierTree()
+        if (process.platform === 'win32' || spec.forceTerminationOnStop) {
           void initialBarrierTermination.then((terminated) => {
             if (!terminated) {
               return
@@ -347,7 +372,8 @@ export function runProcessSync(spec: ProcessSpec): ProcessResult {
   return {
     code: result.status,
     signal: result.signal,
-    stdout: result.stdout?.toString('utf8') ?? '',
+    stdout: spec.captureStdoutBuffer ? '' : (result.stdout?.toString('utf8') ?? ''),
+    ...(spec.captureStdoutBuffer ? { stdoutBuffer: result.stdout ?? Buffer.alloc(0) } : {}),
     stderr: result.stderr?.toString('utf8') ?? '',
     // Why always false: spawnSync reports an overrun as an ENOBUFS error, and
     // the guard above rethrows it, so no truncated result reaches this point.

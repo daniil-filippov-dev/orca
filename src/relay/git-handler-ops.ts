@@ -39,7 +39,7 @@ export async function readBlobAtOid(
 ): Promise<{ content: string; isBinary: boolean }> {
   // Why: Git's `<oid>:<path>` syntax expects forward slashes even on Windows.
   const gitPath = filePath.replace(/\\/g, '/')
-  // Why: preview bytes must resolve LFS pointers using the host's smudge filter.
+  // preview bytes must resolve LFS pointers using the host's smudge filter
   const command = PREVIEWABLE_MIME[path.extname(filePath).toLowerCase()]
     ? ['cat-file', '--filters', '--']
     : ['show', '--end-of-options']
@@ -65,10 +65,10 @@ export async function readBlobAtIndex(
   gitBuffer: GitBufferExec,
   cwd: string,
   filePath: string
-): Promise<{ content: string; isBinary: boolean; missing: boolean }> {
+): Promise<{ content: string; isBinary: boolean; missing: boolean; unmerged?: boolean }> {
   // Why: Git's `:<path>` syntax expects forward slashes even on Windows.
   const gitPath = filePath.replace(/\\/g, '/')
-  // Why: preview bytes must resolve LFS pointers using the host's smudge filter.
+  // preview bytes must resolve LFS pointers using the host's smudge filter
   const command = PREVIEWABLE_MIME[path.extname(filePath).toLowerCase()]
     ? ['cat-file', '--filters', '--']
     : ['show', '--end-of-options']
@@ -84,7 +84,12 @@ export async function readBlobAtIndex(
     }
     if (PREVIEWABLE_MIME[path.extname(filePath).toLowerCase()]) {
       const present = await probeGitBlobPresence((args) => gitBuffer(args, cwd), gitPath)
-      return { content: '', isBinary: present !== false, missing: present === false }
+      return {
+        content: '',
+        isBinary: present !== false,
+        missing: present === false,
+        ...(present === 'unmerged' ? { unmerged: true } : {})
+      }
     }
     // Why: a non-overflow failure means the path is absent from the index (a
     // staged deletion), distinct from the size-capped case handled above.
@@ -98,7 +103,7 @@ export async function readUnstagedLeft(
   filePath: string
 ): Promise<{ content: string; isBinary: boolean }> {
   const index = await readBlobAtIndex(gitBuffer, cwd, filePath)
-  if (index.content || index.isBinary) {
+  if (!index.unmerged && (index.content || index.isBinary)) {
     return index
   }
   return readBlobAtOid(gitBuffer, cwd, 'HEAD', filePath)

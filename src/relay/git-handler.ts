@@ -26,9 +26,9 @@ import { resolveGitFetchHeadCommand, runWithGitFetchHeadLock } from '../shared/g
 import { endSubprocessStdin } from '../shared/subprocess-stdin-write'
 import { MAX_GIT_BUFFER, runGitToTermination } from './git-handler-command-termination'
 import { gitCredentialPromptGuardEnv } from '../shared/git-credential-prompt-env'
+import { runGitBlobCommand } from './git-blob-command'
 
 const execFileAsync = promisify(execFile)
-const GIT_BLOB_READ_TIMEOUT_MS = 120_000
 
 function execFileWithStdin(
   command: string,
@@ -192,19 +192,9 @@ export class GitHandler {
   private async gitBuffer(args: string[], cwd: string, stdin?: string): Promise<Buffer> {
     const filteredRead =
       args.includes('--filters') || (args.includes('lfs') && args.includes('smudge'))
-    const pending = execFileAsync('git', args, {
-      cwd,
-      // Why: smudge may fetch; guard credential UI without overriding the host's configured SSH command.
-      env: filteredRead ? gitCredentialPromptGuardEnv(buildRelayGitEnv()) : buildRelayGitEnv(),
-      encoding: 'buffer',
-      maxBuffer: MAX_GIT_BUFFER,
-      timeout: GIT_BLOB_READ_TIMEOUT_MS
-    })
-    if (stdin !== undefined) {
-      endSubprocessStdin(pending.child.stdin, stdin)
-    }
-    const { stdout } = await pending
-    return stdout
+    // guard credential UI without overriding the host's configured SSH command
+    const env = filteredRead ? gitCredentialPromptGuardEnv(buildRelayGitEnv()) : buildRelayGitEnv()
+    return runGitBlobCommand(args, cwd, env, stdin)
   }
 
   private async spawnClone(

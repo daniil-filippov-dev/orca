@@ -31,4 +31,17 @@ describe('bounded process output', () => {
     expect(sink.text()).toBe('a�')
     expect(sink.truncated()).toBe(true)
   })
+
+  it('preserves binary bytes across chunk boundaries and output limits', () => {
+    const bytes = Buffer.from([0, 0xff, 0x89, 0xc3, 0, 0x80])
+    for (let split = 0; split <= bytes.length; split += 1) {
+      for (let cap = 0; cap <= bytes.length + 1; cap += 1) {
+        const sink = createOutputSink(cap)
+        sink.write(bytes.subarray(0, split))
+        sink.write(bytes.subarray(split))
+        expect(sink.buffer()).toEqual(bytes.subarray(0, cap))
+        expect(sink.truncated()).toBe(bytes.length > cap)
+      }
+    }
+  })
 })

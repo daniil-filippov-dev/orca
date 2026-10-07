@@ -38,6 +38,10 @@ export type ProcessSpec = {
   input?: string
   /** Cap on captured stdout/stderr; output past it is discarded. */
   maxOutputBytes?: number
+  // binary callers must not decode [stdout] before consuming its bytes
+  captureStdoutBuffer?: boolean
+  // parsing callers cannot accept clipped output as a successful result
+  stopOnOutputLimit?: boolean
   /** Kills the process when aborted; the result still reports the exit. */
   signal?: AbortSignal
   /** Keep the child in its own POSIX process group for tree termination. */
@@ -48,6 +52,8 @@ export type ProcessSpec = {
   stdio?: NodeSpawnOptions['stdio']
   /** Kill the whole process tree and do not settle until termination is verified. */
   terminationBarrier?: boolean | ProcessTerminationBarrier
+  // read-only filters can ignore [SIGTERM] after their parent exits
+  forceTerminationOnStop?: boolean
   /** Called once when the child exits or tree termination is verified. */
   onChildTerminated?: () => void
 }
@@ -62,6 +68,7 @@ export type ProcessResult = {
   code: number | null
   signal: NodeJS.Signals | null
   stdout: string
+  stdoutBuffer?: Buffer
   stderr: string
   /** True when the process was killed by `timeoutMs` rather than exiting. */
   timedOut: boolean

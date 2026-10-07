@@ -13,6 +13,7 @@ import { resolveCommand, type ResolvedCommand } from './wsl-command-resolution'
 import { annotateWslHostFailure } from './wsl-host-failure'
 import type { GitAdmissionTier, GitExecOptions } from './git-exec-options'
 import { execFileCapture, execFileCaptureToTermination } from './exec-file-capture'
+import { readCapturedGitBuffer, readCapturedGitString } from './git-captured-output'
 import {
   pendingWslDirectGitReadEnvironment,
   directWslGitExitCode,
@@ -195,6 +196,7 @@ export async function gitExecFileAsyncBuffer(
     timeout?: number
     timeoutMsForTest?: number
     stdin?: string
+    signal?: AbortSignal
     env?: NodeJS.ProcessEnv
     wslDistro?: string
     preferWslDirectGit?: boolean
@@ -204,12 +206,13 @@ export async function gitExecFileAsyncBuffer(
   return withGitSpan({ args, cwd: options.cwd }, async (span) => {
     const filteredRead =
       args.includes('--filters') || (args.includes('lfs') && args.includes('smudge'))
-    // Why: smudge may fetch LFS objects and needs the WSL profile's SSH agent and proxy environment.
+    // smudge may fetch LFS objects and needs the WSL profile's SSH agent and proxy environment
     const effectiveOptions = filteredRead
       ? {
           ...options,
           wslDistro: options.wslDistro ?? resolveGitCommand(args, options).wsl?.distro,
-          useConfiguredSshCommandForNetwork: true
+          useConfiguredSshCommandForNetwork: true,
+          terminationBarrier: true
         }
       : options
     if (isWslLinkedWorktreeGitRoutingCandidate(options.cwd, options.wslDistro)) {
@@ -229,7 +232,8 @@ export async function gitExecFileAsyncBuffer(
       args,
       cwd: options.cwd,
       wslDistro: options.wslDistro,
-      tier: options.admissionTier
+      tier: options.admissionTier,
+      ...(filteredRead ? { signal: options.signal } : {})
     })
     span?.setAttribute('git.queue_wait_ms', grant.queueWaitMs)
     const timeoutMs =
@@ -241,19 +245,31 @@ export async function gitExecFileAsyncBuffer(
       termination = new Promise<void>((resolve) => {
         reportTerminated = resolve
       })
-      const { stdout } = (await execFileCapture(resolved.binary, resolved.args, {
+      const captureOptions = {
         cwd: resolved.cwd,
-        encoding: 'buffer',
+        encoding: 'buffer' as const,
         maxBuffer: options.maxBuffer,
         timeout: timeoutMs,
         stdin: options.stdin,
         env,
+        ...(filteredRead ? { signal: options.signal } : {}),
         admissionTier: options.admissionTier,
         onChildTerminated: reportTerminated,
         ...(timeoutMs === undefined
           ? {}
           : { createTimeoutError: () => new GitCommandTimeoutError(timeoutMs) })
-      })) as { stdout: Buffer }
+      }
+      const { stdout } = await (filteredRead
+        ? execFileCaptureToTermination(
+            resolved.binary,
+            resolved.args,
+            captureOptions,
+            resolved.termination
+          )
+        : execFileCapture(resolved.binary, resolved.args, captureOptions))
+      if (!Buffer.isBuffer(stdout)) {
+        throw new Error('Git blob output is not a buffer')
+      }
       return { stdout: readCapturedGitBuffer(stdout, resolved) }
     } finally {
       if (termination) {
@@ -263,35 +279,6 @@ export async function gitExecFileAsyncBuffer(
       }
     }
   })
-}
-
-// Why bytes: decoding WSL output fences as text would corrupt binary previews.
-function readCapturedGitBuffer(stdout: Buffer, resolved: ResolvedCommand): Buffer {
-  const captured = resolved.captured
-  if (!captured) {
-    return stdout
-  }
-  const beginIndex = stdout.lastIndexOf(captured.beginMarker, undefined, 'utf8')
-  if (beginIndex === -1) {
-    return stdout
-  }
-  const payloadStart = beginIndex + Buffer.byteLength(captured.beginMarker, 'utf8')
-  const endIndex = stdout.indexOf(captured.endMarker, payloadStart, 'utf8')
-  return endIndex === -1 ? stdout.subarray(payloadStart) : stdout.subarray(payloadStart, endIndex)
-}
-
-function readCapturedGitString(stdout: string, resolved: ResolvedCommand): string {
-  const captured = resolved.captured
-  if (!captured) {
-    return stdout
-  }
-  const beginIndex = stdout.lastIndexOf(captured.beginMarker)
-  if (beginIndex === -1) {
-    return stdout
-  }
-  const payloadStart = beginIndex + captured.beginMarker.length
-  const endIndex = stdout.indexOf(captured.endMarker, payloadStart)
-  return endIndex === -1 ? stdout.slice(payloadStart) : stdout.slice(payloadStart, endIndex)
 }
 
 // Why: sync git blocks the main thread; a dead network drive can hang git for minutes without a timeout (issue #7225's 127s freeze).
