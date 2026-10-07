@@ -10,7 +10,9 @@ describe('relay diff request cancellation', () => {
     const signals: AbortSignal[] = []
     const gitBuffer = vi.fn<GitHandlerOperationHost['gitBuffer']>(async (args, _cwd, options) => {
       expect(options?.signal).toBeInstanceOf(AbortSignal)
-      if (options?.signal) signals.push(options.signal)
+      if (options?.signal) {
+        signals.push(options.signal)
+      }
       if (args.includes('smudge')) {
         expect(options?.stdin).toBe(pointer)
         return image

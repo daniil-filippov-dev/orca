@@ -98,7 +98,9 @@ describe('independent relay blob reads', () => {
     async (filePath) => {
       const timeout = Object.assign(new Error('Synthetic blob read timeout'), { timedOut: true })
       const gitBuffer = vi.fn<GitBufferExec>(async (args) => {
-        if (args.at(-1)?.startsWith(':')) throw timeout
+        if (args.at(-1)?.startsWith(':')) {
+          throw timeout
+        }
         return Buffer.from('original\n')
       })
       await expect(computeDiff(gitBuffer, '/repo', filePath, true)).rejects.toBe(timeout)
