@@ -32,14 +32,17 @@ describe('Git LFS image preview resolution', () => {
     )
   })
 
-  it('accepts CRLF pointers and the original Git LFS specification URL', async () => {
-    const historical = Buffer.from(
-      pointer
-        .toString('utf8')
-        .replace('git-lfs.github.com', 'hawser.github.com')
-        .replaceAll('\n', '\r\n')
-    )
-    expect(await resolveGitLfsPreview(historical, 'image.png', async () => image)).toEqual(image)
+  it.each([
+    'https://git-lfs.github.com/spec/v1',
+    'https://hawser.github.com/spec/v1',
+    'http://git-media.io/v/2'
+  ])('accepts %s with LF, CRLF, and no trailing newline', async (version) => {
+    const text = pointer.toString('utf8').replace('https://git-lfs.github.com/spec/v1', version)
+    for (const value of [text, text.replaceAll('\n', '\r\n'), text.trimEnd()]) {
+      const smudge = vi.fn().mockResolvedValue(image)
+      expect(await resolveGitLfsPreview(Buffer.from(value), 'image.png', smudge)).toEqual(image)
+      expect(smudge).toHaveBeenCalledOnce()
+    }
   })
 
   it('rejects successful skip-smudge responses that still contain a pointer', async () => {

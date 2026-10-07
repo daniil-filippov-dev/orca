@@ -6,11 +6,10 @@
  * remain decoupled from the GitHandler class.
  */
 import * as path from 'node:path'
-import { resolveGitLfsPreview } from '../shared/git-lfs-preview'
-import { probeGitBlobPresence } from '../shared/git-blob-presence'
-import { bufferToBlob, parseBranchDiff, PREVIEWABLE_MIME } from './git-handler-utils'
+import { readBlobAtOid, readBlobAtIndex, readUnstagedLeft } from './git-blob-read'
+import { parseGitChangeList } from '../shared/git-change-list'
+import { isGitReadInterruptedError } from './git-buffer-overflow'
 import { buildDiffResult } from './git-diff-result'
-import { isGitBufferOverflowError } from './git-buffer-overflow'
 import { readWorkingDiffFile } from './git-working-file-read'
 
 // ─── Executor types ──────────────────────────────────────────────────
@@ -27,87 +26,15 @@ export type GitExec = (
   }
 ) => Promise<{ stdout: string; stderr: string }>
 
-export type GitBufferExec = (args: string[], cwd: string, stdin?: string) => Promise<Buffer>
+export type GitBufferExec = (
+  args: string[],
+  cwd: string,
+  opts?: { stdin?: string; signal?: AbortSignal; timeout?: number; maxBuffer?: number }
+) => Promise<Buffer>
 
 // ─── Blob reading ────────────────────────────────────────────────────
 
-export async function readBlobAtOid(
-  gitBuffer: GitBufferExec,
-  cwd: string,
-  oid: string,
-  filePath: string
-): Promise<{ content: string; isBinary: boolean }> {
-  // Why: Git's `<oid>:<path>` syntax expects forward slashes even on Windows.
-  const gitPath = filePath.replace(/\\/g, '/')
-  // preview bytes must resolve LFS pointers using the host's smudge filter
-  const command = PREVIEWABLE_MIME[path.extname(filePath).toLowerCase()]
-    ? ['cat-file', '--filters', '--']
-    : ['show', '--end-of-options']
-  try {
-    const buf = await gitBuffer([...command, `${oid}:${gitPath}`], cwd)
-    const content = PREVIEWABLE_MIME[path.extname(filePath).toLowerCase()]
-      ? await resolveGitLfsPreview(buf, gitPath, (args, stdin) => gitBuffer(args, cwd, stdin))
-      : buf
-    return bufferToBlob(content, filePath)
-  } catch (error) {
-    if (isGitBufferOverflowError(error)) {
-      return { content: '', isBinary: true }
-    }
-    if (PREVIEWABLE_MIME[path.extname(filePath).toLowerCase()]) {
-      const present = await probeGitBlobPresence((args) => gitBuffer(args, cwd), gitPath, oid)
-      return { content: '', isBinary: present !== false }
-    }
-    return { content: '', isBinary: false }
-  }
-}
-
-export async function readBlobAtIndex(
-  gitBuffer: GitBufferExec,
-  cwd: string,
-  filePath: string
-): Promise<{ content: string; isBinary: boolean; missing: boolean; unmerged?: boolean }> {
-  // Why: Git's `:<path>` syntax expects forward slashes even on Windows.
-  const gitPath = filePath.replace(/\\/g, '/')
-  // preview bytes must resolve LFS pointers using the host's smudge filter
-  const command = PREVIEWABLE_MIME[path.extname(filePath).toLowerCase()]
-    ? ['cat-file', '--filters', '--']
-    : ['show', '--end-of-options']
-  try {
-    const buf = await gitBuffer([...command, `:${gitPath}`], cwd)
-    const content = PREVIEWABLE_MIME[path.extname(filePath).toLowerCase()]
-      ? await resolveGitLfsPreview(buf, gitPath, (args, stdin) => gitBuffer(args, cwd, stdin))
-      : buf
-    return { ...bufferToBlob(content, filePath), missing: false }
-  } catch (error) {
-    if (isGitBufferOverflowError(error)) {
-      return { content: '', isBinary: true, missing: false }
-    }
-    if (PREVIEWABLE_MIME[path.extname(filePath).toLowerCase()]) {
-      const present = await probeGitBlobPresence((args) => gitBuffer(args, cwd), gitPath)
-      return {
-        content: '',
-        isBinary: present !== false,
-        missing: present === false,
-        ...(present === 'unmerged' ? { unmerged: true } : {})
-      }
-    }
-    // Why: a non-overflow failure means the path is absent from the index (a
-    // staged deletion), distinct from the size-capped case handled above.
-    return { content: '', isBinary: false, missing: true }
-  }
-}
-
-export async function readUnstagedLeft(
-  gitBuffer: GitBufferExec,
-  cwd: string,
-  filePath: string
-): Promise<{ content: string; isBinary: boolean }> {
-  const index = await readBlobAtIndex(gitBuffer, cwd, filePath)
-  if (!index.unmerged && (index.content || index.isBinary)) {
-    return index
-  }
-  return readBlobAtOid(gitBuffer, cwd, 'HEAD', filePath)
-}
+export { readBlobAtOid, readBlobAtIndex, readUnstagedLeft } from './git-blob-read'
 
 // ─── Diff ────────────────────────────────────────────────────────────
 
@@ -126,11 +53,12 @@ export async function computeDiff(
 
   try {
     if (staged) {
-      const left = await readBlobAtOid(git, worktreePath, 'HEAD', filePath)
+      const [left, right] = await Promise.all([
+        readBlobAtOid(git, worktreePath, 'HEAD', filePath),
+        readBlobAtIndex(git, worktreePath, filePath)
+      ])
       originalContent = left.content
       originalIsBinary = left.isBinary
-
-      const right = await readBlobAtIndex(git, worktreePath, filePath)
       modifiedContent = right.content
       modifiedIsBinary = right.isBinary
       modifiedDeleted = right.missing
@@ -146,7 +74,10 @@ export async function computeDiff(
       modifiedIsBinary = right.isBinary
       modifiedDeleted = right.missing
     }
-  } catch {
+  } catch (error) {
+    if (isGitReadInterruptedError(error)) {
+      throw error
+    }
     // Fallback to empty
   }
 
@@ -187,7 +118,10 @@ export async function branchCompare(
     try {
       const { stdout } = await git(['branch', '--show-current'], worktreePath)
       return stdout.trim() || 'HEAD'
-    } catch {
+    } catch (error) {
+      if (isGitReadInterruptedError(error)) {
+        throw error
+      }
       return 'HEAD'
     }
   }
@@ -236,9 +170,20 @@ export async function branchCompare(
     const { stdout } = await git(['merge-base', baseOid, headOid], worktreePath)
     mergeBase = stdout.trim()
     summary.mergeBase = mergeBase
-  } catch {
+  } catch (error) {
+    if (isGitReadInterruptedError(error)) {
+      throw error
+    }
     summary.status = 'no-merge-base'
     summary.errorMessage = `This branch and ${baseRef} do not share a merge base, so compare-to-base is unavailable.`
+    return { summary, entries: [] }
+  }
+
+  // Git must confirm equal raw tips are the same commit before skipping the reads.
+  if (baseOid === headOid && mergeBase === headOid) {
+    summary.commitsAhead = 0
+    summary.commitsBehind = 0
+    summary.status = 'ready'
     return { summary, entries: [] }
   }
 
@@ -280,16 +225,18 @@ export async function branchDiffEntries(
 
     const { stdout: mbOut } = await git(['merge-base', baseOid, headOid], worktreePath)
     mergeBase = mbOut.trim()
-  } catch {
+  } catch (error) {
+    if (isGitReadInterruptedError(error)) {
+      throw error
+    }
     return []
   }
 
-  // Why: see core.quotePath rationale in getStatusOp — keep UTF-8 paths intact.
   const { stdout } = await git(
-    ['-c', 'core.quotePath=false', 'diff', '--name-status', '-M', '-C', mergeBase, headOid],
+    ['diff', '--name-status', '-z', '-M', '-C', mergeBase, headOid, '--'],
     worktreePath
   )
-  const allChanges = parseBranchDiff(stdout)
+  const allChanges = parseGitChangeList(stdout, 'name-status')
 
   // Why: the IPC handler for single-file branch diff sends filePath/oldPath
   // to avoid reading blobs for every changed file — only the matched file.
@@ -315,13 +262,16 @@ export async function branchDiffEntries(
 
   const results: Record<string, unknown>[] = []
   for (const change of changes) {
-    const fp = change.path as string
-    const oldP = (change.oldPath as string) ?? fp
+    const fp = change.path
+    const oldP = change.oldPath ?? fp
     try {
       const left = await readBlobAtOid(gitBuffer, worktreePath, mergeBase, oldP)
       const right = await readBlobAtOid(gitBuffer, worktreePath, headOid, fp)
       results.push(buildDiffResult(left.content, right.content, left.isBinary, right.isBinary, fp))
-    } catch {
+    } catch (error) {
+      if (isGitReadInterruptedError(error)) {
+        throw error
+      }
       results.push({
         kind: 'text',
         originalContent: '',

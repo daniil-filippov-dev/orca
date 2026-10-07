@@ -1,0 +1,111 @@
+import { describe, expect, it, vi } from 'vitest'
+import { createGitHandlerRelay } from './git-handler-test-harness'
+import type { GitHandlerOperationHost } from './git-handler-operation-context'
+
+describe('relay diff request cancellation', () => {
+  it('forwards pointer stdin and the shared cancellation signal to historical LFS reads', async () => {
+    const { handler, dispatcher } = createGitHandlerRelay()
+    const pointer = `version https://git-lfs.github.com/spec/v1\noid sha256:${'a'.repeat(64)}\nsize 4\n`
+    const image = Buffer.from([0, 255, 137, 128])
+    const signals: AbortSignal[] = []
+    const gitBuffer = vi.fn<GitHandlerOperationHost['gitBuffer']>(async (args, _cwd, options) => {
+      expect(options?.signal).toBeInstanceOf(AbortSignal)
+      if (options?.signal) signals.push(options.signal)
+      if (args.includes('smudge')) {
+        expect(options?.stdin).toBe(pointer)
+        return image
+      }
+      return Buffer.from(pointer)
+    })
+    Object.assign(handler, { gitBuffer, git: async () => ({ stdout: '', stderr: '' }) })
+    try {
+      const result = await dispatcher.callRequest(
+        'git.diff',
+        {
+          worktreePath: '/repo',
+          filePath: 'image.png',
+          staged: true
+        },
+        { isStale: () => false, signal: new AbortController().signal }
+      )
+      expect(result).toMatchObject({
+        kind: 'binary',
+        originalContent: image.toString('base64'),
+        modifiedContent: image.toString('base64')
+      })
+      expect(gitBuffer).toHaveBeenCalledTimes(4)
+      expect(signals.every((signal) => signal === signals[0] && !signal.aborted)).toBe(true)
+    } finally {
+      handler.dispose()
+    }
+  })
+
+  it('lets one client cancel without stopping another client sharing the same read', async () => {
+    const { handler, dispatcher } = createGitHandlerRelay()
+    let finish!: () => void
+    const ready = new Promise<Buffer>((resolve) => {
+      finish = () => resolve(Buffer.from('content\n'))
+    })
+    const signals: AbortSignal[] = []
+    const gitBuffer = vi.fn<GitHandlerOperationHost['gitBuffer']>(async (_args, _cwd, options) => {
+      if (options?.signal) {
+        signals.push(options.signal)
+      }
+      return ready
+    })
+    Object.assign(handler, { gitBuffer, git: async () => ({ stdout: '', stderr: '' }) })
+    const params = { worktreePath: '/repo', filePath: 'file.txt', staged: true }
+    const first = new AbortController()
+    const second = new AbortController()
+    const canceled = dispatcher.callRequest('git.diff', params, {
+      isStale: () => false,
+      signal: first.signal
+    })
+    const remaining = dispatcher.callRequest('git.diff', params, {
+      isStale: () => false,
+      signal: second.signal
+    })
+    await vi.waitFor(() => expect(gitBuffer).toHaveBeenCalledTimes(2))
+    const rejected = expect(canceled).rejects.toMatchObject({ name: 'AbortError' })
+    first.abort()
+    await rejected
+    expect(signals.every((signal) => !signal.aborted)).toBe(true)
+    finish()
+    await expect(remaining).resolves.toMatchObject({
+      originalContent: 'content\n',
+      modifiedContent: 'content\n'
+    })
+    handler.dispose()
+  })
+
+  it('stops the shared subprocess reads when their last client cancels', async () => {
+    const { handler, dispatcher } = createGitHandlerRelay()
+    const signals: AbortSignal[] = []
+    const gitBuffer = vi.fn<GitHandlerOperationHost['gitBuffer']>(async (_args, _cwd, options) => {
+      const signal = options?.signal
+      if (!signal) {
+        throw new Error('Request cancellation was not passed to the blob read.')
+      }
+      signals.push(signal)
+      return new Promise<Buffer>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    })
+    Object.assign(handler, { gitBuffer, git: async () => ({ stdout: '', stderr: '' }) })
+    const controller = new AbortController()
+    const pending = dispatcher.callRequest(
+      'git.diff',
+      { worktreePath: '/repo', filePath: 'file.txt', staged: true },
+      {
+        isStale: () => false,
+        signal: controller.signal
+      }
+    )
+    await vi.waitFor(() => expect(gitBuffer).toHaveBeenCalledTimes(2))
+    const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    controller.abort()
+    await rejected
+    expect(signals.every((signal) => signal.aborted)).toBe(true)
+    handler.dispose()
+  })
+})

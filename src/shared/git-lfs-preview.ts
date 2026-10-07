@@ -6,7 +6,9 @@ function isLfsPointer(buffer: Buffer): boolean {
   }
   const pointer = buffer.toString('utf8')
   return (
-    /^version https:\/\/(?:git-lfs|hawser)\.github\.com\/spec\/v1\r?\n/.test(pointer) &&
+    /^version (?:https:\/\/(?:git-lfs|hawser)\.github\.com\/spec\/v1|http:\/\/git-media\.io\/v\/2)\r?\n/.test(
+      pointer
+    ) &&
     /^oid sha256:[a-f0-9]{64}\r?$/m.test(pointer) &&
     /^size [0-9]+\r?$/m.test(pointer)
   )

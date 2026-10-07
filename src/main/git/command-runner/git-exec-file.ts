@@ -31,6 +31,8 @@ import {
   GitCommandTimeoutError,
   gitCommandTimeoutMs
 } from './git-command-timeout'
+import { classifyGitCommand } from '../../../shared/git-command-classification'
+import { createAbortError } from './abort-error'
 
 /**
  * Async git command execution. Drop-in replacement for
@@ -67,9 +69,10 @@ async function gitExecFileAsyncUnlocked(
         false,
         effectiveOptions.captureWslLoginShellOutput
       )
-      const policy = effectiveOptions.useConfiguredSshCommandForNetwork
-        ? await buildNetworkSshPolicyEnv(effectiveOptions)
-        : { env: nonInteractiveGitEnv(effectiveOptions.env), mode: 'default' as const }
+      const policy =
+        effectiveOptions.useConfiguredSshCommandForNetwork || classifyGitCommand(args) === 'network'
+          ? await buildNetworkSshPolicyEnv(effectiveOptions, args)
+          : { env: nonInteractiveGitEnv(effectiveOptions.env), mode: 'default' as const }
       const grant = options.admissionExempt
         ? { queueWaitMs: 0, release: () => {} }
         : await acquireGitAdmission({
@@ -77,7 +80,7 @@ async function gitExecFileAsyncUnlocked(
             cwd: options.cwd,
             wslDistro: options.wslDistro,
             tier: options.admissionTier,
-            signal: options.signal
+            signal: options.admissionSignal ?? options.signal
           })
       span?.setAttribute('git.queue_wait_ms', grant.queueWaitMs)
       const timeoutMs = gitCommandTimeoutMs(args, options.timeout, options.timeoutMsForTest)
@@ -156,6 +159,10 @@ async function gitExecFileAsyncUnlocked(
         }
       }
       try {
+        options.admissionSignal?.throwIfAborted()
+        if (options.canStart?.() === false) {
+          throw createAbortError()
+        }
         return await runCapturedCommand()
       } finally {
         const termination = terminationState.current
@@ -216,24 +223,26 @@ export async function gitExecFileAsyncBuffer(
         }
       : options
     if (isWslLinkedWorktreeGitRoutingCandidate(options.cwd, options.wslDistro)) {
-      await prepareWslLinkedWorktreeGitRouting(options.cwd, options.wslDistro)
+      await prepareWslLinkedWorktreeGitRouting(options.cwd, options.wslDistro, {
+        signal: options.signal
+      })
     }
     await pendingWslDirectGitReadEnvironment(args, effectiveOptions)
     // `git show` is a read, so this normally runs with no shell at all. The fence
     // still matters for the login-shell fallback: these are raw blob bytes going
     // straight to the diff/blob viewer, where a banner becomes file content.
     let resolved = resolveGitCommand(args, effectiveOptions, false, true)
-    await prepareWindowsHostGitEnvironment(resolved, undefined)
+    await prepareWindowsHostGitEnvironment(resolved, undefined, options.signal)
     resolved = resolveGitCommand(args, effectiveOptions, false, true)
     const env = filteredRead
-      ? (await buildNetworkSshPolicyEnv(effectiveOptions)).env
+      ? (await buildNetworkSshPolicyEnv(effectiveOptions, args)).env
       : untranslatedGitOutputEnv(options.env)
     const grant = await acquireGitAdmission({
       args,
       cwd: options.cwd,
       wslDistro: options.wslDistro,
       tier: options.admissionTier,
-      ...(filteredRead ? { signal: options.signal } : {})
+      signal: options.signal
     })
     span?.setAttribute('git.queue_wait_ms', grant.queueWaitMs)
     const timeoutMs =
@@ -252,7 +261,7 @@ export async function gitExecFileAsyncBuffer(
         timeout: timeoutMs,
         stdin: options.stdin,
         env,
-        ...(filteredRead ? { signal: options.signal } : {}),
+        signal: options.signal,
         admissionTier: options.admissionTier,
         onChildTerminated: reportTerminated,
         ...(timeoutMs === undefined

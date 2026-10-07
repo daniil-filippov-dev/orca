@@ -22,7 +22,7 @@ describe('relay Git LFS previews', () => {
     expect(git).toHaveBeenLastCalledWith(
       ['-c', 'lfs.fetchinclude=', '-c', 'lfs.fetchexclude=', 'lfs', 'smudge', '--', 'image.png'],
       '/repo',
-      pointer.toString('utf8')
+      { stdin: pointer.toString('utf8') }
     )
   })
 

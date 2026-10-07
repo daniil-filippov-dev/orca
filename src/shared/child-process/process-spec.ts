@@ -38,10 +38,10 @@ export type ProcessSpec = {
   input?: string
   /** Cap on captured stdout/stderr; output past it is discarded. */
   maxOutputBytes?: number
-  // binary callers must not decode [stdout] before consuming its bytes
-  captureStdoutBuffer?: boolean
-  // parsing callers cannot accept clipped output as a successful result
-  stopOnOutputLimit?: boolean
+  /** Capture stdout as bytes without decoding; stdout stays empty in this mode. */
+  captureStdoutAsBytes?: boolean
+  /** Stop a parser command as soon as captured output exceeds its cap. */
+  killOnOutputLimit?: boolean
   /** Kills the process when aborted; the result still reports the exit. */
   signal?: AbortSignal
   /** Keep the child in its own POSIX process group for tree termination. */
@@ -50,9 +50,11 @@ export type ProcessSpec = {
   windowsVerbatimArguments?: boolean
   /** Streaming callers may suppress child output for auxiliary processes. */
   stdio?: NodeSpawnOptions['stdio']
+  /** Bun and Node require JSON for an IPC channel shared between the two runtimes. */
+  serialization?: NodeSpawnOptions['serialization']
   /** Kill the whole process tree and do not settle until termination is verified. */
   terminationBarrier?: boolean | ProcessTerminationBarrier
-  // read-only filters can ignore [SIGTERM] after their parent exits
+  /** Force read-only filter trees down before their root can lose ownership. */
   forceTerminationOnStop?: boolean
   /** Called once when the child exits or tree termination is verified. */
   onChildTerminated?: () => void
@@ -68,7 +70,7 @@ export type ProcessResult = {
   code: number | null
   signal: NodeJS.Signals | null
   stdout: string
-  stdoutBuffer?: Buffer
+  stdoutBytes?: Buffer
   stderr: string
   /** True when the process was killed by `timeoutMs` rather than exiting. */
   timedOut: boolean

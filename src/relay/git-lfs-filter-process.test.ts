@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { gitExecFileAsyncBuffer } from '../main/git/command-runner/git-exec-file'
 import { runProcess } from '../shared/child-process/run-process'
-import { runGitBlobCommand } from './git-blob-command'
+import { runGitToTermination } from './git-handler-command-termination'
 
 const temporaryRoots: string[] = []
 afterEach(async () => {
@@ -44,7 +44,13 @@ describe.skipIf(process.platform === 'win32')('owned Git image filter processes'
       const content =
         runtime === 'desktop'
           ? (await gitExecFileAsyncBuffer(args, { cwd: process.cwd() })).stdout
-          : await runGitBlobCommand(args, process.cwd(), process.env)
+          : (
+              await runGitToTermination(
+                args,
+                { cwd: process.cwd(), env: process.env, captureStdoutAsBytes: true },
+                undefined
+              )
+            ).stdoutBytes
       expect(content).toEqual(Buffer.from([0, 255, 137, 195, 128]))
     }
   )
@@ -61,7 +67,11 @@ describe.skipIf(process.platform === 'win32')('owned Git image filter processes'
       const pending =
         runtime === 'desktop'
           ? gitExecFileAsyncBuffer(args, { cwd: process.cwd(), timeoutMsForTest: 1000 })
-          : runGitBlobCommand(args, process.cwd(), process.env, undefined, 1000)
+          : runGitToTermination(
+              args,
+              { cwd: process.cwd(), env: process.env, captureStdoutAsBytes: true, timeout: 1000 },
+              undefined
+            )
       await expect(pending).rejects.toThrow(/timed out/)
       const pid = (await readFile(marker, 'utf8')).trim()
       const probe = await runProcess({

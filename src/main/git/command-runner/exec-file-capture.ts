@@ -2,6 +2,7 @@ import { execFile, type ChildProcess, type ExecFileOptions } from 'node:child_pr
 import { recordSubprocessSpawn } from '../../diagnostics/main-thread-churn-probe'
 import { endSubprocessStdin } from '../../../shared/subprocess-stdin-write'
 import { runProcess } from '../../../shared/child-process/run-process'
+import { resolveSelectedLocalCommand } from '../../ipc/command-path-resolver'
 import type { WslProcessGroupTermination } from '../wsl-process-group-termination'
 import { createAbortError } from './abort-error'
 import { killSpawnedCommandTree } from './spawned-command-tree-kill'
@@ -30,7 +31,10 @@ export async function execFileCaptureToTermination(
   // Spawn cost is reported by spawnProcess's observer, which runProcess goes
   // through; recording it again here would double-count every capture.
   const pending = runProcess({
-    program: command,
+    program: resolveSelectedLocalCommand(command, {
+      env: options.env,
+      cwd: typeof options.cwd === 'string' ? options.cwd : undefined
+    }),
     args,
     cwd: typeof options.cwd === 'string' ? options.cwd : undefined,
     env: options.env,
@@ -39,13 +43,13 @@ export async function execFileCaptureToTermination(
     signal: options.signal,
     terminationBarrier: termination ?? true,
     ...(options.encoding === 'buffer'
-      ? { captureStdoutBuffer: true, stopOnOutputLimit: true, forceTerminationOnStop: true }
+      ? { captureStdoutAsBytes: true, killOnOutputLimit: true, forceTerminationOnStop: true }
       : {}),
     onChildTerminated: options.onChildTerminated,
     ...(options.stdin === undefined ? {} : { input: options.stdin })
   })
   const result = await pending
-  const stdout = options.encoding === 'buffer' ? result.stdoutBuffer : result.stdout
+  const stdout = options.encoding === 'buffer' ? result.stdoutBytes : result.stdout
   if (stdout === undefined) {
     throw new Error('Binary command output is unavailable')
   }

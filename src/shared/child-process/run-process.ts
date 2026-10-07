@@ -71,18 +71,15 @@ export function spawnProcess(spec: ProcessSpec): ChildProcessWithoutNullStreams 
  *
  * Never rejects on a non-zero exit — the exit code is data. Rejects only when
  * the process could not be started at all.
+ * Tail capture keeps final diagnostics without changing termination policy.
  */
-export function runProcess(spec: ProcessSpec): Promise<ProcessResult> {
+export function runProcess(
+  spec: ProcessSpec,
+  outputCapture: 'head' | 'tail' = 'head'
+): Promise<ProcessResult> {
   if (spec.signal?.aborted) {
     spec.onChildTerminated?.()
-    return Promise.resolve({
-      code: null,
-      signal: null,
-      stdout: '',
-      stderr: '',
-      timedOut: false,
-      ...(spec.captureStdoutBuffer ? { stdoutBuffer: Buffer.alloc(0) } : {})
-    })
+    return Promise.resolve({ code: null, signal: null, stdout: '', stderr: '', timedOut: false })
   }
   const maxOutputBytes = spec.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES
 
@@ -97,8 +94,8 @@ export function runProcess(spec: ProcessSpec): Promise<ProcessResult> {
       return
     }
 
-    const stdout = createOutputSink(maxOutputBytes)
-    const stderr = createOutputSink(maxOutputBytes)
+    const stdout = createOutputSink(maxOutputBytes, outputCapture)
+    const stderr = createOutputSink(maxOutputBytes, outputCapture)
     let timedOut = false
     let settled = false
     let barrierStopping = false
@@ -109,7 +106,6 @@ export function runProcess(spec: ProcessSpec): Promise<ProcessResult> {
     let deferredClose: { code: number | null; signal: NodeJS.Signals | null } | null = null
     let deferredError: Error | null = null
     let rootExitedBeforeBarrier = false
-    let outputLimitStopping = false
 
     const settle = (act: () => void): void => {
       if (settled) {
@@ -123,26 +119,20 @@ export function runProcess(spec: ProcessSpec): Promise<ProcessResult> {
       act()
     }
 
-    const stopOnOutputLimit = (): void => {
-      if (
-        spec.stopOnOutputLimit &&
-        !outputLimitStopping &&
-        (stdout.truncated() || stderr.truncated())
-      ) {
-        outputLimitStopping = true
-        stopAndSettle()
-      }
-    }
     child.stdout?.on('data', (chunk: Buffer | string) => {
       stdout.write(chunk)
-      stopOnOutputLimit()
+      if (spec.killOnOutputLimit && stdout.truncated()) {
+        stopAndSettle()
+      }
     })
     child.stderr?.on('data', (chunk: Buffer | string) => {
       stderr.write(chunk)
+      if (spec.killOnOutputLimit && stderr.truncated()) {
+        stopAndSettle()
+      }
       if (typeof spec.terminationBarrier === 'object') {
         spec.terminationBarrier.observeStderr?.(chunk)
       }
-      stopOnOutputLimit()
     })
     // Why listeners that do nothing: an unhandled `error` on a stream is an
     // uncaught exception, and that takes the whole main process down. A child
@@ -172,8 +162,8 @@ export function runProcess(spec: ProcessSpec): Promise<ProcessResult> {
         resolve({
           code,
           signal,
-          stdout: spec.captureStdoutBuffer ? '' : stdout.text(),
-          ...(spec.captureStdoutBuffer ? { stdoutBuffer: stdout.buffer() } : {}),
+          stdout: spec.captureStdoutAsBytes ? '' : stdout.text(),
+          ...(spec.captureStdoutAsBytes ? { stdoutBytes: stdout.buffer() } : {}),
           stderr: stderr.text(),
           timedOut,
           outputTruncated: stdout.truncated() || stderr.truncated()
@@ -372,8 +362,8 @@ export function runProcessSync(spec: ProcessSpec): ProcessResult {
   return {
     code: result.status,
     signal: result.signal,
-    stdout: spec.captureStdoutBuffer ? '' : (result.stdout?.toString('utf8') ?? ''),
-    ...(spec.captureStdoutBuffer ? { stdoutBuffer: result.stdout ?? Buffer.alloc(0) } : {}),
+    stdout: spec.captureStdoutAsBytes ? '' : (result.stdout?.toString('utf8') ?? ''),
+    ...(spec.captureStdoutAsBytes ? { stdoutBytes: result.stdout ?? Buffer.alloc(0) } : {}),
     stderr: result.stderr?.toString('utf8') ?? '',
     // Why always false: spawnSync reports an overrun as an ENOBUFS error, and
     // the guard above rethrows it, so no truncated result reaches this point.
